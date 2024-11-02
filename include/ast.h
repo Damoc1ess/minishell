@@ -6,7 +6,7 @@
 /*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2024/11/01 12:36:31 by fflamion          #+#    #+#             */
-/*   Updated: 2024/11/02 13:41:58 by fflamion         ###   ########.fr       */
+/*   Updated: 2024/11/02 15:34:08 by fflamion         ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -42,8 +42,11 @@ void        add_argument(t_ast_node *node, char *argument);
 void        free_ast(t_ast_node *node);
 
 //parser
-t_ast_node  *ast_parser(t_t_list *token_list);
-t_ast_node *parse_parentheses(t_token **current_token);
+t_ast_node	*ast_parser(t_t_list *token_list);
+t_ast_node	*parse_parentheses(t_token **current_token);
+t_ast_node	*parse_command(t_token **current_token);
+t_ast_node	*parse_pipeline(t_token **current_token);
+t_ast_node	*parse_and_or_sequence(t_token **current_token);
 
 //execution
 int execute_ast(t_ast_node *node, t_sh *shell);

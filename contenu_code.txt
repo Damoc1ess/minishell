@@ -1,0 +1,1812 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   minishell.c                                        :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/23 09:47:28 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 15:42:10 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../include/minishell.h"
+
+int process_input(char *input, t_sh *shell)
+{
+	t_t_list *t_list;
+	t_ast_node *ast_root;
+
+	t_list = lexer(input, shell);
+	if (!t_list)
+		return (1);
+	// print_t_list(t_list);
+	// if (parser(t_list))
+	// {
+	// 	free_token_list(t_list);
+	// 	return (1);
+	// }
+	ast_root = ast_parser(t_list);
+	// print_ast(ast_root, 0);
+	execute_ast(ast_root, shell);
+	free_ast(ast_root);
+	free_token_list(t_list);
+	return (0);
+}
+
+void main_loop(t_sh *shell)
+{
+	char *input;
+
+	while (1)
+	{
+		input = readline("minishell> ");
+		if (!input)
+			break;
+		if (*input)
+		{
+			add_history(input);
+			if (process_input(input, shell))
+			{
+				free(input);
+				break;
+			}
+		}
+		free(input);
+	}
+}
+
+int main(void)
+{
+	t_sh shell;
+	extern char **environ;
+
+	// print_env(environ);
+	setup_signals();
+	initialize_shell(&shell, environ);
+	main_loop(&shell);
+	// write_history("history_file.txt");
+
+	return (0);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   utils2.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 17:09:54 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/31 08:57:49 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+void	h_cmd_arg(char *input, uint16_t *i, t_t_list *t_list, char **envp)
+{
+	char	buffer[256];
+	int		j;
+
+	j = 0;
+	while (input[*i] && !ft_isspace(input[*i])
+		&& input[*i] != '|' && input[*i] != '>'
+		&& input[*i] != '<' && j < (int) sizeof(buffer) - 1)
+	{
+		buffer[j++] = input[(*i)++];
+	}
+	buffer[j] = '\0';
+	if (command_exists(buffer, envp))
+		add_token(t_list, create_token(buffer, TOKEN_COMMAND));
+	else
+		add_token(t_list, create_token(buffer, TOKEN_ARGUMENT));
+}
+
+void	handle_and(uint16_t *i, t_t_list *t_list)
+{
+	add_token(t_list, create_token("&&", TOKEN_AND));
+	(*i) += 2;
+}
+
+void	handle_wildcards(uint16_t *i, t_t_list *t_list)
+{
+	add_token(t_list, create_token("*", TOKEN_WILDCARDS));
+	(*i)++;
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   lexer.c                                            :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 13:09:04 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 12:00:18 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+int	is_builtin_command(char *cmd)
+{
+	return (!ft_strcmp(cmd, "cd") || !ft_strcmp(cmd, "history")
+			|| !ft_strcmp(cmd, "exit") || !ft_strcmp(cmd, "alias")
+			|| !ft_strcmp(cmd, "export") || !ft_strcmp(cmd, "unset"));
+}
+
+bool	is_whitespace(char c, uint16_t *i)
+{
+	if (ft_isspace(c))
+	{
+		(*i)++;
+		return (true);
+	}
+	return (false);
+}
+
+void	handle_token(char *input, uint16_t *i, t_t_list *t_list, t_sh *shell)
+{
+	if (input[*i] == '|')
+		h_pipe(input, i, t_list);
+	else if (input[*i] == '>')
+		h_rout(input, i, t_list);
+	else if (input[*i] == '<')
+		h_rin(input, i, t_list);
+	else if (input[*i] == '\'')
+		h_s_q(input, i, t_list);
+	else if (input[*i] == '\"')
+		h_d_q(input, i, t_list, shell);
+	else if (input[*i] == '&' && input[*i + 1] == '&')
+		handle_and(i, t_list);
+	else if (input[*i] == '*')
+		handle_wildcards(i, t_list);
+	else if (input[*i] == '$')
+		h_exp(input, i, t_list, shell);
+	else if (input[*i] == '(' || input[*i] == ')')
+		h_par(input[*i], i, t_list);
+	else if(ft_strchr("!@#%^&_=+", input[*i]))
+		handle_inconnu(input, i, t_list);
+	else if (is_builtin_command(&input[*i]))
+		handle_builtin_command(input, i, t_list);
+	else
+		h_cmd_arg(input, i, t_list, shell->envp);
+}
+
+t_t_list	*lexer(char *input, t_sh *shell)
+{
+	t_t_list	*t_list;
+	uint16_t	i;
+
+	i = 0;
+	t_list = init_t_list();
+	if (!t_list)
+		return (NULL);
+	while (input[i] && is_whitespace(input[i], &i))
+		;
+	if (input[i] == '\0')
+		return (t_list);
+	i = 0;
+	while (input[i])
+	{
+		while (is_whitespace(input[i], &i))
+			;
+		if (input[i] == '\0')
+			break ;
+		handle_token(input, &i, t_list, shell);
+	}
+	return (t_list);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   utils1.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 17:04:19 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/30 11:46:14 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+void	h_pipe(char *input, uint16_t *i, t_t_list *t_list)
+{
+	if (input[*i + 1] == '|')
+	{
+		add_token(t_list, create_token("||", TOKEN_OR));
+		(*i) += 2;
+	}
+	else
+	{
+		add_token(t_list, create_token("|", TOKEN_PIPE));
+		(*i)++;
+	}
+}
+
+void	h_rout(char *input, uint16_t *i, t_t_list *t_list)
+{
+	if (input[*i + 1] == '>')
+	{
+		add_token(t_list, create_token(">>", TOKEN_APPEND));
+		(*i) += 2;
+	}
+	else
+	{
+		add_token(t_list, create_token(">", TOKEN_REDIRECTION_OUT));
+		(*i)++;
+	}
+}
+
+void	h_rin(char *input, uint16_t *i, t_t_list *t_list)
+{
+	t_token	*heredoc_token;
+	char	delimiter[256];
+	int		j;
+
+	if (input[*i + 1] == '<')
+	{
+		heredoc_token = create_token("<<", TOKEN_HEREDOC);
+		add_token(t_list, heredoc_token);
+		(*i) += 2;
+		while (input[*i] && ft_isspace(input[*i]))
+			(*i)++;
+		j = 0;
+		while (input[*i] && !ft_isspace(input[*i]) && j < 255)
+			delimiter[j++] = input[(*i)++];
+		delimiter[j] = '\0';
+		handle_heredoc(heredoc_token, delimiter);
+	}
+	else
+	{
+		add_token(t_list, create_token("<", TOKEN_REDIRECTION_IN));
+		(*i)++;
+	}
+}
+
+void	h_s_q(char *input, uint16_t *i, t_t_list *t_list)
+{
+	char		buffer[256];
+	uint16_t	j;
+
+	j = 0;
+	(*i)++;
+	while (input[*i] && input[*i] != '\'' && j < sizeof(buffer) - 1)
+		buffer[j++] = input[(*i)++];
+	buffer[j] = '\0';
+	if (input[*i] == '\'')
+	{
+		add_token(t_list, create_token(buffer, TOKEN_STRING));
+		(*i)++;
+	}
+	else
+		fprintf(stderr, "Error: Missing closing single quote\n");
+}
+
+void	h_d_q(char *input, uint16_t *i, t_t_list *t_list, t_sh *shell)
+{
+	char	buffer[256];
+	char	*env_value;
+	size_t	j;
+
+	j = 0;
+	(*i)++;
+	while (input[*i] && input[*i] != '\"')
+	{
+		if (input[*i] == '$')
+		{
+			(*i)++;
+			env_value = parse_env_var(input, i, shell);
+			while (*env_value && j < sizeof(buffer) - 1)
+				buffer[j++] = *env_value++;
+		}
+		else if (j < sizeof(buffer) - 1)
+			buffer[j++] = input[(*i)++];
+	}
+	buffer[j] = '\0';
+	add_token(t_list, create_token(buffer, TOKEN_STRING));
+	if (input[*i] == '\"')
+		(*i)++;
+	else
+		printf("Error: Missing closing double quote\n");
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   T_ListUtils.c                                   :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: nghaddar <nghaddar@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/26 19:27:26 by nghaddar          #+#    #+#             */
+/*   Updated: 2024/10/26 20:37:51 by nghaddar         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+t_t_list	*init_t_list(void)
+{
+	t_t_list	*new_t_list;
+
+	new_t_list = malloc(sizeof(t_t_list));
+	if (!new_t_list)
+		return (NULL);
+	new_t_list->first = NULL;
+	new_t_list->last = NULL;
+	new_t_list->size = 0;
+	return (new_t_list);
+}
+
+void	free_token_list(t_t_list *t_list_to_free)
+{
+	t_token	*token_cursor;
+	t_token	*to_free;
+
+	if (t_list_to_free)
+	{
+		token_cursor = t_list_to_free->first;
+		while (token_cursor)
+		{
+			to_free = token_cursor;
+			token_cursor = to_free->next;
+			if (to_free->value)
+				free(to_free->value);
+			free(to_free);
+		}
+		free(t_list_to_free);
+	}
+}
+
+t_token	*create_token(const char *value, t_token_type type)
+{
+	t_token	*new_token;
+
+	new_token = malloc(sizeof(t_token));
+	if (!new_token)
+		return (NULL);
+	new_token->next = NULL;
+	new_token->prev = NULL;
+	new_token->type = type;
+	new_token->index = 0;
+	new_token->value = ft_strdup(value);
+	if (!new_token->value)
+	{
+		free(new_token);
+		return (NULL);
+	}
+	return (new_token);
+}
+
+void	add_token(t_t_list *t_list, t_token *new_token)
+{
+	if (!t_list || !new_token)
+		return ;
+	if (!t_list->first)
+	{
+		new_token->index = 0;
+		t_list->first = new_token;
+		t_list->last = new_token;
+	}
+	else
+	{
+		new_token->index = t_list->last->index + 1;
+		new_token->prev = t_list->last;
+		new_token->next = NULL;
+		t_list->last->next = new_token;
+		t_list->last = new_token;
+	}
+	t_list->size++;
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   utils3.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/25 12:36:26 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/30 11:43:03 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+void	handle_brace_expand(char *input, uint16_t *i, t_t_list *t_list)
+{
+	char	buffer[256];
+	size_t	j;
+	char	*word;
+
+	j = 0;
+	(*i)++;
+	while (input[*i] && input[*i] != '}')
+	{
+		if (j < sizeof(buffer) - 1)
+			buffer[j++] = input[*i];
+		(*i)++;
+	}
+	if (input[*i] != '}')
+	{
+		fprintf(stderr, "Error: Missing closing brace\n");
+		return ;
+	}
+	(*i)++;
+	buffer[j] = '\0';
+	word = ft_strtok(buffer, " ");
+	while (word != NULL)
+	{
+		add_token(t_list, create_token(word, TOKEN_EXPAND));
+		word = ft_strtok(NULL, " ");
+	}
+}
+
+void	h_alnum_ex(char *input, uint16_t *i, t_t_list *token_list, char **envp)
+{
+	char			buffer[256];
+	unsigned int	j;
+	char			*value;
+
+	j = 0;
+	while (input[*i] && (ft_isalnum(input[*i]) || input[*i] == '_'))
+	{
+		if (j < sizeof(buffer) - 1)
+			buffer[j++] = input[*i];
+		(*i)++;
+	}
+	buffer[j] = '\0';
+	value = get_env_value(buffer, envp);
+	if (value)
+		add_token(token_list, create_token((value), TOKEN_EXPAND));
+	else
+		add_token(token_list, create_token((""), TOKEN_EXPAND));
+}
+
+void	h_exp(char *input, uint16_t *i, t_t_list *t_list, t_sh *shell)
+{
+	char	*status;
+
+	(*i)++;
+	if (input[*i] == '?')
+	{
+		status = ft_itoa(shell->exit_status);
+		add_token(t_list, create_token(status, TOKEN_EXPAND));
+		(*i)++;
+	}
+	else if (input[*i] == '{')
+		handle_brace_expand(input, i, t_list);
+	else
+		h_alnum_ex(input, i, t_list, shell->envp);
+}
+
+char	*parse_env_var(char *input, uint16_t *i, t_sh *shell)
+{
+	char	var_name[256];
+	char	*env_value;
+	size_t	var_len;
+
+	var_len = 0;
+	while (input[*i] && ft_isalnum(input[*i]) && var_len < sizeof(var_name) - 1)
+	{
+		var_name[var_len] = input[*i];
+		var_len++;
+		(*i)++;
+	}
+	var_name[var_len] = '\0';
+	env_value = get_env_value(var_name, shell->envp);
+	if (env_value)
+		return (env_value);
+	else
+		return ("");
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   utils4.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/29 15:54:03 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/31 11:50:58 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+void	handle_heredoc(t_token *heredoc_token, char *delimiter)
+{
+	int		fd;
+	char	*line;
+
+	fd = open("heredoc.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+	if (fd == -1)
+		return ;
+	while (1)
+	{
+		line = readline("> ");
+		if (!line || ft_strcmp(line, delimiter) == 0)
+			break ;
+		write(fd, line, ft_strlen(line));
+		write(fd, "\n", 1);
+		free(line);
+	}
+	free(line);
+	close(fd);
+	free(heredoc_token->value);
+	heredoc_token->value = ft_strdup("heredoc.txt");
+}
+
+void	handle_inconnu(char *input, uint16_t *i, t_t_list *t_list)
+{
+	char	buffer[2];
+
+	buffer[0] = input[*i];
+	buffer[1] = '\0';
+	add_token(t_list, create_token(buffer, TOKEN_INCONNU));
+	(*i)++;
+}
+
+void	handle_builtin_command(char *input, uint16_t *i, t_t_list *t_list)
+{
+	char	buffer[256];
+	int		j;
+
+	j = 0;
+	while (input[*i] && !ft_isspace(input[*i])
+		&& input[*i] != '|' && input[*i] != '>'
+		&& input[*i] != '<' && j < (int) sizeof(buffer) - 1)
+	{
+		buffer[j++] = input[(*i)++];
+	}
+	buffer[j] = '\0';
+	add_token(t_list, create_token(buffer, TOKEN_COMMAND));
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   utils5.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/31 08:08:35 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 11:55:16 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+bool check_path(char *path, char *command)
+{
+	char *full_path;
+	int exists;
+
+	full_path = ft_strjoin(path, "/");
+	if (!full_path)
+		return (false);
+	full_path = ft_strjoin_free(full_path, command);
+	if (!full_path)
+		return (false);
+	exists = (access(full_path, X_OK) == 0);
+	free(full_path);
+	return (exists);
+}
+
+bool command_exists(char *command, char **envp)
+{
+	char *path;
+	char **paths;
+	int i;
+	bool found;
+
+	path = get_env_value("PATH", envp);
+	if (!path)
+		return (false);
+	paths = ft_split(path, ':');
+	if (!paths)
+		return (false);
+	i = 0;
+	found = false;
+	while (paths[i] && !found)
+	{
+		found = check_path(paths[i], command);
+		i++;
+	}
+	ft_free_split(paths);
+	return (found);
+}
+
+void h_par(char c, uint16_t *i, t_t_list *t_list)
+{
+	if (c == '(')
+		add_token(t_list, create_token("(", TOKEN_LPAREN));
+	else if (c == ')')
+		add_token(t_list, create_token(")", TOKEN_RPAREN));
+	(*i)++;
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   initShell.c                                        :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/26 10:23:12 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/30 11:34:46 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+void	initialize_shell(t_sh *shell, char **envp)
+{
+	shell->exit_status = 0;
+	shell->envp = envp;
+}
+
+void	update_exit_status(t_sh *shell, int status)
+{
+	if (WIFEXITED(status))
+		shell->exit_status = WEXITSTATUS(status);
+	else
+		shell->exit_status = 1;
+}
+
+char	*get_env_value(const char *name, char **envp)
+{
+	int		i;
+	size_t	len;
+
+	i = 0;
+	len = ft_strlen(name);
+	while (envp[i])
+	{
+		if (ft_strncmp(envp[i], name, len) == 0 && envp[i][len] == '=')
+			return (&envp[i][len + 1]);
+		i++;
+	}
+	return (NULL);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   cd.c                                               :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: nghaddar <nghaddar@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 14:29:27 by nghaddar          #+#    #+#             */
+/*   Updated: 2024/10/26 16:13:37 by nghaddar         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+// int		builtin_cd(char *path)
+// {
+	
+// }/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   echo.c                                             :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 14:14:04 by nghaddar          #+#    #+#             */
+/*   Updated: 2024/10/27 18:39:09 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+int		builtin_echo(char *s, char optN)
+{
+	ft_putstr(s);
+	if (!optN)
+		ft_putchar('\n');
+	return (0);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   print.c                                            :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 21:48:27 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 14:08:28 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+#include "../../include/debugger.h"
+
+static const char *color_codes[] = {
+	GREEN, GREEN, YELLOW, YELLOW, YELLOW,
+	YELLOW, YELLOW, CYAN, CYAN, CYAN,
+	CYAN, MAGENTA, MAGENTA, MAGENTA, RED,
+	BLUE, BLUE
+};
+
+void	print_token_type(t_token_type type)
+{
+	const char	*types[] = {
+		"Command", "Argument", "Pipe", "Redirection In", "Redirection Out",
+		"Append", "Heredoc", "Variable", "String", "And", "Or",
+		"End of File", "Wildcard", "Expand", "Unknown token type",
+		"Left Parenthesis", "Right Parenthesis"
+	};
+	int	index = -1;
+
+	if (type & TOKEN_COMMAND)
+		index = 0;
+	else if (type & TOKEN_ARGUMENT)
+		index = 1;
+	else if (type & TOKEN_PIPE)
+		index = 2;
+	else if (type & TOKEN_REDIRECTION_IN)
+		index = 3;
+	else if (type & TOKEN_REDIRECTION_OUT)
+		index = 4;
+	else if (type & TOKEN_APPEND)
+		index = 5;
+	else if (type & TOKEN_HEREDOC)
+		index = 6;
+	else if (type & TOKEN_VARIABLE)
+		index = 7;
+	else if (type & TOKEN_STRING)
+		index = 8;
+	else if (type & TOKEN_AND)
+		index = 9;
+	else if (type & TOKEN_OR)
+		index = 10;
+	else if (type & TOKEN_EOF)
+		index = 11;
+	else if (type & TOKEN_WILDCARDS)
+		index = 12;
+	else if (type & TOKEN_EXPAND)
+		index = 13;
+	else if (type & TOKEN_INCONNU)
+		index = 14;
+	else if (type & TOKEN_LPAREN)
+		index = 15;
+	else if (type & TOKEN_RPAREN)
+		index = 16;
+
+	if (index >= 0 && index < (sizeof(types) / sizeof(types[0])) &&
+	    index < (sizeof(color_codes) / sizeof(color_codes[0])))
+		printf("%s%s%s", color_codes[index], types[index], RESET);
+	else
+		printf("Unknown Type");
+}
+
+void	print_t_list(t_t_list *t_list)
+{
+	t_token			*token_cursor;
+	unsigned int	index;
+
+	printf(CYAN "\n== TOKEN LIST (" YELLOW "%u" CYAN " tokens) ==\n" RESET, t_list->size);
+	token_cursor = t_list->first;
+	index = 0;
+	while (token_cursor)
+	{
+		printf(BLUE "Token %u:\n" RESET, index);
+		printf("  " MAGENTA "Type   : " RESET);
+		print_token_type(token_cursor->type);
+		printf("\n  " MAGENTA "Value  : " RESET "\"%s\"", token_cursor->value);
+		printf(CYAN "-----------------------------\n" RESET);
+		token_cursor = token_cursor->next;
+		index++;
+	}
+	printf(CYAN "== END OF TOKEN LIST ==\n\n" RESET);
+}
+
+void	print_env(char **envp)
+{
+	int	i;
+
+	i = 0;
+	while (envp[i])
+	{
+		printf("%s\n", envp[i]);
+		i++;
+	}
+}
+#define RESET   "\033[0m"
+#define RED     "\033[31m"
+#define GREEN   "\033[32m"
+#define YELLOW  "\033[33m"
+#define BLUE    "\033[34m"
+#define MAGENTA "\033[35m"
+#define CYAN    "\033[36m"
+#define WHITE   "\033[37m"
+
+static const char *get_color(int level)
+{
+    const char *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE};
+    return (colors[level % 7]);
+}
+
+
+static void print_indentation(int level)
+{
+    int i;
+
+    i = 0;
+    while (i < level)
+    {
+        printf("    ");
+        i++;
+    }
+}
+
+static void print_node_info(t_ast_node *node, int level)
+{
+    const char *color;
+
+    color = get_color(level);
+    printf("%s", color);
+    if (node->type == AST_COMMAND)
+    {
+        printf("COMMAND: ");
+        if (node->argv)
+        {
+            int i = 0;
+            while (node->argv[i])
+            {
+                printf("%s", node->argv[i]);
+                if (node->argv[i + 1])
+                    printf(" ");
+                i++;
+            }
+        }
+        printf("\n");
+    }
+    else if (node->type == AST_PIPE)
+        printf("PIPE\n");
+    else if (node->type == AST_AND)
+        printf("AND (&&)\n");
+    else if (node->type == AST_OR)
+        printf("OR (||)\n");
+    else if (node->type == AST_REDIRECTION_IN)
+        printf("REDIR_IN: <%s\n", node->filename);
+    else if (node->type == AST_REDIRECTION_OUT)
+        printf("REDIR_OUT: >%s\n", node->filename);
+    else if (node->type == AST_REDIRECTION_APPEND)
+        printf("REDIR_APPEND: >>%s\n", node->filename);
+    else if (node->type == AST_REDIRECTION_HEREDOC)
+        printf("HEREDOC: <<%s\n", node->filename);
+    printf(RESET);
+}
+
+void print_ast(t_ast_node *node, int level)
+{
+    if (!node)
+        return;
+    print_indentation(level);
+    print_node_info(node, level);
+    if (node->left)
+        print_ast(node->left, level + 1);
+    if (node->right)
+        print_ast(node->right, level + 1);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   parser.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/29 14:48:46 by nghaddar          #+#    #+#             */
+/*   Updated: 2024/11/02 14:13:48 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+int verif_pipe(t_token *pipe_token)
+{
+	t_token_type p_type;
+	int check_mask;
+
+	if (!pipe_token->index || !pipe_token->next)
+	{
+		printf("minishell: syntax error near unexpected token `|'\n");
+		return (1);
+	}
+
+	p_type = pipe_token->prev->type;
+	check_mask = (TOKEN_COMMAND | TOKEN_VARIABLE | TOKEN_STRING | TOKEN_ARGUMENT);
+
+	if (!(p_type & (check_mask)))
+	{
+		printf("minishell: syntax error near unexpected token `|'\n");
+		return (1);
+	}
+
+	return (0);
+}
+
+int verif_redir_in_out_set(t_token *redir_in_token)
+{
+	t_token_type n_type;
+	int check_mask;
+
+	if (!redir_in_token->next)
+	{
+		printf("minishell: syntax error near unexpected token `newline'\n");
+		return (1);
+	}
+
+	n_type = redir_in_token->next->type;
+	check_mask = TOKEN_STRING | TOKEN_COMMAND | TOKEN_EXPAND | TOKEN_ARGUMENT;
+	if (!(n_type & check_mask))
+	{
+		if (redir_in_token->next)
+			printf("minishell: syntax error near unexpected token `%s'\n", redir_in_token->next->value);
+		else
+			printf("minishell: syntax error near unexpected token `newline'\n");
+		return (1);
+	}
+	return (0);
+}
+
+int verif_operand_set(t_token *operand_token)
+{
+	t_token_type p_type;
+	int check_mask;
+
+	if (!operand_token->index || !operand_token->next)
+	{
+		printf("minishell: syntax error near unexpected token `%s'\n", operand_token->value);
+		return (1);
+	}
+
+	p_type = operand_token->prev->type;
+	check_mask = (TOKEN_ARGUMENT | TOKEN_STRING | TOKEN_WILDCARDS | TOKEN_EXPAND | TOKEN_COMMAND);
+	if (!(p_type & check_mask))
+	{
+		printf("minishell: syntax error near unexpected token `%s'\n", operand_token->value);
+		return (1);
+	}
+
+	return (0);
+}
+
+int verif_unknown(t_token *unknown_token)
+{
+	// if (unknown_token->next)
+	printf("minishell: syntax error near unexpected token : `%s'\n", unknown_token->value);
+	// else
+	// printf("minishell: syntax error near unexpected token `newline'\n");
+	return (1);
+}
+
+int check_parentheses_balance(t_t_list *token_list)
+{
+	t_token *current_token = token_list->first;
+	int balance = 0;
+
+	while (current_token)
+	{
+		if (current_token->type == TOKEN_LPAREN)
+			balance++;
+		else if (current_token->type == TOKEN_RPAREN)
+			balance--;
+		if (balance < 0)
+		{
+			printf("minishell: syntax error near unexpected token `%s'\n", current_token->value);
+			return (1);
+		}
+		current_token = current_token->next;
+	}
+	if (balance != 0)
+	{
+		printf("minishell: syntax error: unmatched parentheses\n");
+		return (1);
+	}
+	return (0);
+}
+
+int parser(t_t_list *token_list)
+{
+	t_token *token_cursor = token_list->first;
+	int status = 0;
+
+	if (check_parentheses_balance(token_list))
+		return (1);
+
+	while (token_cursor)
+	{
+		if (token_cursor->type == TOKEN_PIPE)
+			status = verif_pipe(token_cursor);
+		else if (token_cursor->type & (TOKEN_REDIRECTION_IN | TOKEN_HEREDOC | TOKEN_REDIRECTION_OUT | TOKEN_APPEND))
+			status = verif_redir_in_out_set(token_cursor);
+		else if (token_cursor->type & (TOKEN_AND | TOKEN_OR))
+			status = verif_operand_set(token_cursor);
+		else if (token_cursor->type == TOKEN_INCONNU)
+			status = verif_unknown(token_cursor);
+
+		if (status)
+			return (status);
+		token_cursor = token_cursor->next;
+	}
+	return (0);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   ast_list.c                                         :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/11/01 18:12:42 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/01 18:12:43 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+t_ast_node  *create_ast_node(t_ast_node_type type)
+{
+    t_ast_node  *node;
+
+    node = malloc(sizeof(t_ast_node));
+    if (!node)
+        return (NULL);
+    node->type = type;
+    node->argv = NULL;
+    node->filename = NULL;
+    node->left = NULL;
+    node->right = NULL;
+    return (node);
+}
+
+void    add_argument(t_ast_node *node, char *argument)
+{
+    char    **new_argv;
+    int     argc;
+    int     i;
+
+    argc = 0;
+    while (node->argv && node->argv[argc])
+        argc++;
+    new_argv = malloc(sizeof(char *) * (argc + 2));
+    if (!new_argv)
+        return ;
+    i = 0;
+    while (i < argc)
+    {
+        new_argv[i] = node->argv[i];
+        i++;
+    }
+    new_argv[i] = ft_strdup(argument);
+    new_argv[i + 1] = NULL;
+    free(node->argv);
+    node->argv = new_argv;
+}
+
+void    free_ast(t_ast_node *node)
+{
+    int i;
+
+    if (!node)
+        return ;
+    if (node->argv)
+    {
+        i = 0;
+        while (node->argv[i])
+        {
+            free(node->argv[i]);
+            i++;
+        }
+        free(node->argv);
+    }
+    if (node->filename)
+        free(node->filename);
+    free_ast(node->left);
+    free_ast(node->right);
+    free(node);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   parser.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/11/01 18:12:45 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 14:46:37 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+t_ast_node *parse_command(t_token **current_token);
+t_ast_node *parse_pipeline(t_token **current_token);
+t_ast_node *parse_and_or_sequence(t_token **current_token);
+
+t_ast_node *ast_parser(t_t_list *token_list)
+{
+	t_token *current_token;
+	t_ast_node *ast_root;
+
+	current_token = token_list->first;
+	ast_root = parse_and_or_sequence(&current_token);
+	return (ast_root);
+}
+
+t_ast_node *parse_and_or_sequence(t_token **current_token)
+{
+	t_ast_node *left;
+	t_ast_node *node;
+	t_token *token;
+
+	left = parse_pipeline(current_token);
+	while (*current_token && ((*current_token)->type == TOKEN_AND || (*current_token)->type == TOKEN_OR))
+	{
+		token = *current_token;
+		*current_token = (*current_token)->next;
+		node = create_ast_node(token->type == TOKEN_AND ? AST_AND : AST_OR);
+		node->left = left;
+		node->right = parse_pipeline(current_token);
+		left = node;
+	}
+	return (left);
+}
+
+t_ast_node *parse_pipeline(t_token **current_token)
+{
+	t_ast_node *left;
+	t_ast_node *node;
+
+	left = parse_parentheses(current_token);
+	while (*current_token && (*current_token)->type == TOKEN_PIPE)
+	{
+		*current_token = (*current_token)->next;
+		node = create_ast_node(AST_PIPE);
+		node->left = left;
+		node->right = parse_parentheses(current_token);
+		left = node;
+	}
+	return (left);
+}
+
+void parse_redirections(t_token **current_token, t_ast_node *command_node)
+{
+	t_token *token;
+	t_ast_node *redir_node;
+	t_ast_node *tmp;
+
+	while (*current_token && ((*current_token)->type == TOKEN_REDIRECTION_IN 
+		|| (*current_token)->type == TOKEN_REDIRECTION_OUT 
+		|| (*current_token)->type == TOKEN_APPEND 
+		|| (*current_token)->type == TOKEN_HEREDOC))
+	{
+		token = *current_token;
+		*current_token = (*current_token)->next;
+		if ((!*current_token 
+		|| (*current_token)->type != TOKEN_ARGUMENT)
+		&& !(*current_token)->type != TOKEN_HEREDOC )
+		{
+			printf("minishell: curent_token: No such file or directory\n ici\n");
+			return;
+		}
+		redir_node = create_ast_node(AST_REDIRECTION_IN);
+		if (token->type == TOKEN_REDIRECTION_OUT)
+			redir_node = create_ast_node(AST_REDIRECTION_OUT);
+		else if (token->type == TOKEN_APPEND)
+			redir_node = create_ast_node(AST_REDIRECTION_APPEND);
+		else if (token->type == TOKEN_HEREDOC)
+			redir_node = create_ast_node(AST_REDIRECTION_HEREDOC);
+		redir_node->filename = ft_strdup((*current_token)->value);
+		*current_token = (*current_token)->next;
+		if (!command_node->left)
+			command_node->left = redir_node;
+		else
+		{
+			tmp = command_node->left;
+			while (tmp->left)
+				tmp = tmp->left;
+			tmp->left = redir_node;
+		}
+	}
+}
+
+t_ast_node *parse_command(t_token **current_token)
+{
+	t_ast_node *node;
+
+	if (!*current_token)
+		return (NULL);
+	node = create_ast_node(AST_COMMAND);
+	while (*current_token && ((*current_token)->type == TOKEN_COMMAND || (*current_token)->type == TOKEN_ARGUMENT || (*current_token)->type == TOKEN_STRING || (*current_token)->type == TOKEN_EXPAND))
+	{
+		add_argument(node, (*current_token)->value);
+		*current_token = (*current_token)->next;
+	}
+	parse_redirections(current_token, node);
+	return (node);
+}
+
+t_ast_node *parse_parentheses(t_token **current_token)
+{
+	t_ast_node *node;
+
+	if ((*current_token)->type == TOKEN_LPAREN)
+	{
+		*current_token = (*current_token)->next;
+		node = parse_and_or_sequence(current_token);
+		if (!(*current_token) || (*current_token)->type != TOKEN_RPAREN)
+		{
+			fprintf(stderr, "minishell: syntax error near unexpected token `%s'\n",
+					(*current_token) ? (*current_token)->value : "newline");
+			return NULL;
+		}
+		*current_token = (*current_token)->next;
+		return node;
+	}
+	else
+	{
+		return parse_command(current_token);
+	}
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   executor.c                                         :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/11/01 18:12:34 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/01 18:12:35 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+int  execute_command_node(t_ast_node *node, t_sh *shell);
+int  execute_pipe_node(t_ast_node *node, t_sh *shell);
+int  execute_and_node(t_ast_node *node, t_sh *shell);
+int  execute_or_node(t_ast_node *node, t_sh *shell);
+void handle_redirections(t_ast_node *node);
+
+int execute_ast(t_ast_node *node, t_sh *shell)
+{
+    if (!node)
+        return (0);
+    if (node->type == AST_COMMAND)
+        return (execute_command_node(node, shell));
+    else if (node->type == AST_PIPE)
+        return (execute_pipe_node(node, shell));
+    else if (node->type == AST_AND)
+        return (execute_and_node(node, shell));
+    else if (node->type == AST_OR)
+        return (execute_or_node(node, shell));
+    return (0);
+}
+
+int execute_command_node(t_ast_node *node, t_sh *shell)
+{
+    pid_t   pid;
+    int     status;
+
+    pid = fork();
+    if (pid == 0)
+    {
+        handle_redirections(node);
+        if (execvp(node->argv[0], node->argv) == -1)
+        {
+            perror("minishell");
+            exit(EXIT_FAILURE);
+        }
+    }
+    else if (pid > 0)
+    {
+        waitpid(pid, &status, 0);
+        update_exit_status(shell, status);
+        return (shell->exit_status);
+    }
+    else
+    {
+        perror("minishell");
+        return (-1);
+    }
+}
+
+int execute_pipe_node(t_ast_node *node, t_sh *shell)
+{
+    int     pipefd[2];
+    pid_t   pid_left;
+    pid_t   pid_right;
+    int     status;
+
+    if (pipe(pipefd) == -1)
+    {
+        perror("minishell");
+        return (-1);
+    }
+    pid_left = fork();
+    if (pid_left == 0)
+    {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execute_ast(node->left, shell);
+        exit(shell->exit_status);
+    }
+    pid_right = fork();
+    if (pid_right == 0)
+    {
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execute_ast(node->right, shell);
+        exit(shell->exit_status);
+    }
+    close(pipefd[0]);
+    close(pipefd[1]);
+    waitpid(pid_left, &status, 0);
+    waitpid(pid_right, &status, 0);
+    update_exit_status(shell, status);
+    return (shell->exit_status);
+}
+
+int execute_and_node(t_ast_node *node, t_sh *shell)
+{
+    int status;
+
+    status = execute_ast(node->left, shell);
+    if (status == 0)
+        return (execute_ast(node->right, shell));
+    return (status);
+}
+
+int execute_or_node(t_ast_node *node, t_sh *shell)
+{
+    int status;
+
+    status = execute_ast(node->left, shell);
+    if (status != 0)
+        return (execute_ast(node->right, shell));
+    return (status);
+}
+
+void handle_redirections(t_ast_node *node)
+{
+    t_ast_node  *redir;
+
+    redir = node->left;
+    while (redir)
+    {
+        if (redir->type == AST_REDIRECTION_IN)
+        {
+            int fd = open(redir->filename, O_RDONLY);
+            if (fd == -1)
+            {
+                perror("minishell");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+        }
+        else if (redir->type == AST_REDIRECTION_OUT)
+        {
+            int fd = open(redir->filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd == -1)
+            {
+                perror("minishell");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        }
+        else if (redir->type == AST_REDIRECTION_APPEND)
+        {
+            int fd = open(redir->filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd == -1)
+            {
+                perror("minishell");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        }
+        // heredoc de merde ici pe a voir jsp
+        redir = redir->left;
+    }
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   signal.c                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/30 09:34:38 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/31 09:23:11 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+typedef struct s_colors
+{
+	const char	*colors[16];
+	int			color_count;
+	int			index;
+}	t_colors;
+
+void	init_colors(t_colors *color_set)
+{
+	color_set->colors[0] = "\033[0;90m";
+	color_set->colors[1] = "\033[0;37m";
+	color_set->colors[2] = "\033[0;37m";
+	color_set->colors[3] = "\033[1;90m";
+	color_set->colors[4] = "\033[1;37m";
+	color_set->colors[5] = "\033[1;90m";
+	color_set->colors[6] = "\033[1;90m";
+	color_set->colors[7] = "\033[0;37m";
+	color_set->colors[8] = "\033[1;90m";
+	color_set->colors[9] = "\033[0;37m";
+	color_set->colors[10] = "\033[1;97m";
+	color_set->colors[11] = "\033[1;97m";
+	color_set->colors[12] = "\033[1;90m";
+	color_set->colors[13] = "\033[0;37m";
+	color_set->colors[14] = "\033[0;90m";
+	color_set->colors[15] = "\033[1;97m";
+
+	color_set->color_count = 16;
+	color_set->index = 0;
+}
+
+
+void	handle_sigint(int signum)
+{
+	static t_colors	color_set;
+	const char		*reset_color;
+
+	reset_color = "\033[0m";
+	if (color_set.color_count == 0)
+		init_colors(&color_set);
+	(void)signum;
+	write(1, "\n", 1);
+	write(1, color_set.colors[color_set.index], 7);
+	write(1, "minishell> ", 11);
+	write(1, reset_color, 4);
+	color_set.index = (color_set.index + 1) % color_set.color_count;
+}
+
+void	setup_signals(void)
+{
+	struct sigaction	sa;
+
+	sa.sa_handler = handle_sigint;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sigaction(SIGINT, &sa, NULL);
+	sa.sa_handler = SIG_IGN;
+	sigaction(SIGQUIT, &sa, NULL);
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   free.c                                             :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/26 10:34:59 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/27 18:14:46 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "../../include/minishell.h"
+
+void	free_shell(t_sh *shell)
+{
+	int	i;
+
+	i = 0;
+	if (shell->envp)
+	{
+		while (shell->envp[i])
+		{
+			free (shell->envp[i]);
+			i++;
+		}
+		free (shell->envp);
+	}
+}
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   builtins.h                                         :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 14:10:57 by nghaddar          #+#    #+#             */
+/*   Updated: 2024/10/27 16:29:52 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef BUILTINS_H
+# define BUILTINS_H
+
+int		builtin_echo(char *s, char optN);
+int		builtin_cd(char *path);
+
+#endif/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   lexer.h                                            :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 13:09:54 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 14:05:53 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef LEXER_H
+#define LEXER_H
+
+#include "minishell.h"
+
+typedef enum e_token_type
+{
+	TOKEN_COMMAND = (1 << 0),
+	TOKEN_ARGUMENT = (1 << 1),
+	TOKEN_PIPE = (1 << 2),
+	TOKEN_REDIRECTION_IN = (1 << 3),
+	TOKEN_REDIRECTION_OUT = (1 << 4),
+	TOKEN_APPEND = (1 << 5),
+	TOKEN_HEREDOC = (1 << 6),
+	TOKEN_VARIABLE = (1 << 7),
+	TOKEN_STRING = (1 << 8),
+	TOKEN_AND = (1 << 9),
+	TOKEN_OR = (1 << 10),
+	TOKEN_EOF = (1 << 11),
+	TOKEN_WILDCARDS = (1 << 12),
+	TOKEN_EXPAND = (1 << 13),
+	TOKEN_INCONNU = (1 << 14),
+	TOKEN_LPAREN = (1 << 15),
+	TOKEN_RPAREN = (1 << 16),
+} t_token_type;
+
+typedef struct s_token
+{
+	t_token_type type;
+	char *value;
+	uint16_t index;
+	struct s_token *next;
+	struct s_token *prev;
+} t_token;
+
+typedef struct s_token_list
+{
+	struct s_token *first;
+	struct s_token *last;
+	unsigned int size;
+} t_t_list;
+
+// T_List & token utils
+t_t_list *init_t_list(void);
+void free_token_list(t_t_list *t_list);
+t_token *create_token(const char *value, t_token_type type);
+void add_token(t_t_list *t_list, t_token *new_token);
+
+t_t_list *lexer(char *input, t_sh *shell);
+
+// lexer utils1
+void h_pipe(char *input, uint16_t *i, t_t_list *t_list);
+void h_rout(char *input, uint16_t *i, t_t_list *t_list);
+void h_rin(char *input, uint16_t *i, t_t_list *t_list);
+void h_s_q(char *input, uint16_t *i, t_t_list *t_list);
+void h_d_q(char *input, uint16_t *i, t_t_list *t_list, t_sh *shell);
+
+// lexer utils2
+void h_cmd_arg(char *input, uint16_t *i, t_t_list *t_list, char **invp);
+void handle_and(uint16_t *i, t_t_list *t_list);
+void handle_wildcards(uint16_t *i, t_t_list *t_list);
+
+// lexer utils3
+void h_exp(char *input, uint16_t *i, t_t_list *t_list, t_sh *shell);
+char *parse_env_var(char *input, uint16_t *i, t_sh *shell);
+
+// lexer utils4
+void handle_heredoc(t_token *heredoc_token, char *delimiter);
+void handle_inconnu(char *input, uint16_t *i, t_t_list *t_list);
+void handle_builtin_command(char *input, uint16_t *i, t_t_list *t_list);
+
+// lexxer utils5
+bool command_exists(char *command, char **envp);
+void h_par(char c, uint16_t *i, t_t_list *t_list);
+#endif
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   signal.h                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/30 09:05:55 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/30 11:27:29 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef SIGNAL_H
+# define SIGNAL_H
+
+void	setup_signals(void);
+
+#endif/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   debugger.h                                         :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/24 21:57:07 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 12:05:16 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef DEBUGGER_H
+# define DEBUGGER_H
+
+# include "minishell.h"
+# include "ast.h"
+
+# define RESET		"\033[0m"
+# define RED		"\033[31m"
+# define GREEN		"\033[32m"
+# define YELLOW		"\033[33m"
+# define BLUE		"\033[34m"
+# define MAGENTA	"\033[35m"
+# define CYAN		"\033[36m"
+# define WHITE		"\033[37m"
+
+void	print_t_list(t_t_list *list);
+void	print_env(char **envp);
+void    print_ast(t_ast_node *node, int level);
+
+
+#endif
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   ast.h                                              :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/11/01 12:36:31 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/02 15:34:08 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef AST_H
+# define AST_H
+
+# include "lexer.h"
+# include "debugger.h"
+
+typedef enum e_ast_node_type
+{
+    AST_COMMAND,
+    AST_PIPE,
+    AST_AND,
+    AST_OR,
+    AST_REDIRECTION_IN,
+    AST_REDIRECTION_OUT,
+    AST_REDIRECTION_APPEND,
+    AST_REDIRECTION_HEREDOC
+}   t_ast_node_type;
+
+typedef struct s_ast_node
+{
+    t_ast_node_type     type;
+    char                **argv;
+    char                *filename;
+    struct s_ast_node   *left;
+    struct s_ast_node   *right;
+}   t_ast_node;
+
+t_ast_node  *create_ast_node(t_ast_node_type type);
+void        add_argument(t_ast_node *node, char *argument);
+void        free_ast(t_ast_node *node);
+
+//parser
+t_ast_node	*ast_parser(t_t_list *token_list);
+t_ast_node	*parse_parentheses(t_token **current_token);
+t_ast_node	*parse_command(t_token **current_token);
+t_ast_node	*parse_pipeline(t_token **current_token);
+t_ast_node	*parse_and_or_sequence(t_token **current_token);
+
+//execution
+int execute_ast(t_ast_node *node, t_sh *shell);
+
+#endif
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   minishell.h                                        :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/23 09:50:53 by fflamion          #+#    #+#             */
+/*   Updated: 2024/11/01 12:41:13 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef MINISHELL_H
+# define MINISHELL_H
+
+# include <unistd.h>
+# include <stdlib.h>
+# include <stdio.h>
+# include <limits.h>
+# include <stdint.h>
+# include <sys/wait.h>
+# include <sys/types.h>
+# include <dirent.h>
+# include <stdbool.h>
+# include <fcntl.h>
+# include <errno.h>
+
+# include <signal.h>
+# include <readline/readline.h>
+# include <readline/history.h>
+
+# include "../libft/includes/libft.h"
+# include "builtins.h"
+# include "shell.h"
+# include "parser.h"
+# include "lexer.h"
+# include "builtins.h"
+# include "debugger.h"
+# include "signal.h"
+# include "ast.h"
+
+#endif/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   parser.h                                           :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/29 14:43:43 by nghaddar          #+#    #+#             */
+/*   Updated: 2024/10/31 22:10:25 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef PARSER_H
+# define PARSER_H
+
+# include "lexer.h"
+
+int		parser(t_t_list *token_list);
+
+#endif
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   shell.h                                            :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fflamion <fflamion@student.42.fr>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2024/10/26 11:09:34 by fflamion          #+#    #+#             */
+/*   Updated: 2024/10/27 17:31:42 by fflamion         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#ifndef SHELL_H
+# define SHELL_H
+
+typedef struct s_shell
+{
+	int		exit_status;
+	char	**envp;
+}				t_sh;
+
+void	update_exit_status(t_sh *shell, int status);
+void	initialize_shell(t_sh *shell, char **envp);
+char	*get_env_value(const char *name, char **envp);
+
+#endif
